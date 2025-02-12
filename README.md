@@ -53,8 +53,11 @@ Tip: If you want these scripts to execute visibly, you can change their extensio
 
 ## Linking scripts to your Stream Deck
 
-Once you've created your scripts, launch the stream deck application. On the right panel find system > launch. Drag that icon into an open slot. Fill in the path to your bash script from the above step. Optionally, add an icon. Example below:
+Once you've created your scripts, launch the stream deck application. On the right panel find system > launch. Drag that icon into an open slot. Fill in the path to your bash script from the above step. Optionally, add an icon. 
+
 ![Stream Deck configuration](./assets/streamdecksublime.png)
+
+Thats it!
 
 ## Configuration
 
