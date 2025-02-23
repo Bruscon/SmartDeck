@@ -208,86 +208,108 @@ class AppFocuser:
         max_retries = self.config["global"]["max_retries"]
         retry_delay = self.config["global"]["focus_retry_delay"]
         
-        # Get the current foreground window's thread
-        cur_foreground = win32gui.GetForegroundWindow()
-        cur_thread = win32process.GetWindowThreadProcessId(cur_foreground)[0]
-        # Get the target window's thread and process ID
-        target_thread, target_pid = win32process.GetWindowThreadProcessId(hwnd)
-        
         for attempt in range(max_retries):
             try:
-                # Attach input threads
-                win32process.AttachThreadInput(target_thread, cur_thread, True)
-                try:
-                    if win32gui.IsIconic(hwnd):  # If minimized
-                        win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                # Check if window still exists
+                if not win32gui.IsWindow(hwnd):
+                    return False
                     
-                    # Force allow setting foreground window (using win32con, not win32gui)
+                # Simple focus attempt first
+                if win32gui.IsIconic(hwnd):  # If minimized
+                    win32gui.ShowWindow(hwnd, win32con.SW_RESTORE)
+                
+                try:
                     win32gui.SetForegroundWindow(hwnd)
                     win32gui.BringWindowToTop(hwnd)
-                    
-                    # Save as last focused window
+                    # Save as last focused window only on success
                     self.config["last_focused"][self.app_name] = hwnd
                     self.save_config()
                     return True
-                    
-                finally:
-                    # Always detach threads
-                    win32process.AttachThreadInput(target_thread, cur_thread, False)
+                except Exception:
+                    # If simple focus fails, try the thread attachment method
+                    cur_foreground = win32gui.GetForegroundWindow()
+                    if cur_foreground and win32gui.IsWindow(cur_foreground):
+                        cur_thread = win32process.GetWindowThreadProcessId(cur_foreground)[0]
+                        target_thread = win32process.GetWindowThreadProcessId(hwnd)[0]
+                        
+                        if cur_thread and target_thread and cur_thread != target_thread:
+                            win32process.AttachThreadInput(target_thread, cur_thread, True)
+                            try:
+                                win32gui.SetForegroundWindow(hwnd)
+                                win32gui.BringWindowToTop(hwnd)
+                                self.config["last_focused"][self.app_name] = hwnd
+                                self.save_config()
+                                return True
+                            finally:
+                                win32process.AttachThreadInput(target_thread, cur_thread, False)
                     
             except Exception as e:
                 if attempt == max_retries - 1:
                     self.log(f"Error focusing window after {max_retries} attempts: {e}")
-                    return False
+                    # Don't return False yet - let cycle_app_windows try other windows
                 time.sleep(retry_delay)
                 
         return False
 
+    def get_window_z_order(self, hwnd: int) -> int:
+        """Get the Z-order index of a window. Lower numbers are more recent."""
+        try:
+            z_order = 0
+            current = win32gui.GetWindow(win32gui.GetDesktopWindow(), win32con.GW_CHILD)
+            
+            while current:
+                if current == hwnd:
+                    return z_order
+                z_order += 1
+                current = win32gui.GetWindow(current, win32con.GW_HWNDNEXT)
+                
+            return float('inf')  # Window not found
+        except Exception as e:
+            self.log(f"Error getting Z-order for window {hwnd}: {e}")
+            return float('inf')
+
     def cycle_app_windows(self) -> bool:
         """Find all app windows and focus the appropriate one."""
-        # Get list of all app windows
         windows = self.find_app_windows()
         if not windows:
             self.log("No windows found for the application")
             return False
             
-        # Get currently focused window and last focused window for this app
-        current_hwnd = win32gui.GetForegroundWindow()
-        last_focused_hwnd = self.config["last_focused"].get(self.app_name)
+        # Convert to list of (hwnd, pid, title, z_order)
+        window_info = []
+        for hwnd, pid, title in windows:
+            z_order = self.get_window_z_order(hwnd)
+            window_info.append((hwnd, pid, title, z_order))
+            
+        # Sort by Z-order (most recent first)
+        window_info.sort(key=lambda x: x[3])
         
-        # Create list of window info
-        valid_windows = [(hwnd, title) for hwnd, _, title in windows]
-        
-        self.log(f"Found {len(valid_windows)} windows. Current window: {current_hwnd}, Last focused: {last_focused_hwnd}")
-        
-        # Log all windows we found
-        for hwnd, title in valid_windows:
-            self.log(f"Window {hwnd}: '{title}'")
+        self.log(f"Found {len(window_info)} windows, sorted by Z-order:")
+        for hwnd, pid, title, z_order in window_info:
+            self.log(f"Window {hwnd} (Z-order: {z_order}): '{title}'")
         
         try:
-            # First priority: If we have a last focused window and it still exists, use it
-            if last_focused_hwnd:
-                for hwnd, title in valid_windows:
-                    if hwnd == last_focused_hwnd:
-                        self.log(f"Focusing last focused window: {hwnd} ({title})")
-                        return self.focus_window(hwnd)
+            current_hwnd = win32gui.GetForegroundWindow()
             
-            # Second priority: If current window is one of our windows, cycle to next
+            # Try to focus most recently used window first
+            most_recent = window_info[0]
+            if most_recent[0] != current_hwnd:  # If not already focused
+                self.log(f"Attempting to focus most recent window: {most_recent[0]} ({most_recent[2]})")
+                if self.focus_window(most_recent[0]):
+                    return True
+                    
+            # If that fails or if it's already focused, cycle to next
             current_index = -1
-            for i, (hwnd, _) in enumerate(valid_windows):
+            for i, (hwnd, _, _, _) in enumerate(window_info):
                 if hwnd == current_hwnd:
                     current_index = i
                     break
+                    
+            next_index = (current_index + 1) % len(window_info)
+            next_window = window_info[next_index]
             
-            self.log(f"Current window index: {current_index}")
-            
-            # If current window not in list or no last focused window, proceed with cycling
-            next_index = (current_index + 1) % len(valid_windows) if current_index >= 0 else 0
-            next_hwnd = valid_windows[next_index][0]
-            next_title = valid_windows[next_index][1]
-            
-            self.log(f"Moving from index {current_index} to {next_index} with title: {next_title}")
-            return self.focus_window(next_hwnd)
+            self.log(f"Cycling to next window: {next_window[0]} ({next_window[2]})")
+            return self.focus_window(next_window[0])
                 
         except Exception as e:
             self.log(f"Error during window cycling: {e}")
