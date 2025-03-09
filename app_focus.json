@@ -1,0 +1,41 @@
+{
+  "global": {
+    "launch_timeout": 10,
+    "focus_retry_delay": 0.1,
+    "max_retries": 3,
+    "max_log_lines": 1000,
+    "tab_switch_delay": 0.1,
+    "max_tabs": 20
+  },
+  "window_classes": {},
+  "last_focused": {
+    "bcompare": 1704576,
+    "git-bash": 1185758,
+    "obsidian": 2494068
+  },
+  "app_configs": {
+    "bcompare": {
+      "window_classes": [
+        "TViewForm"
+      ],
+      "title_required": true,
+      "title_includes": [
+        "Compare"
+      ],
+      "title_excludes": [
+        "Home"
+      ]
+    },
+    "git-bash": {
+      "window_classes": [
+        "mintty"
+      ],
+      "title_required": true,
+      "title_includes": [
+        "MINGW64"
+      ],
+      "title_excludes": [],
+      "process_name": "mintty.exe"
+    }
+  }
+}

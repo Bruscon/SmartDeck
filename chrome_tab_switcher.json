@@ -1,0 +1,20 @@
+{
+  "global": {
+    "max_tabs": 100,
+    "tab_switch_delay": 0.1,
+    "launch_timeout": 10,
+    "focus_retry_delay": 0.1,
+    "max_retries": 3,
+    "max_log_lines": 1000
+  },
+  "last_positions": {
+    "claude.ai": 0,
+    "": 0,
+    "perplexity.ai": 2
+  },
+  "urls": {
+    "claude.ai": "https://claude.ai",
+    "perplexity.ai": "https://www.perplexity.ai",
+    "": "https://"
+  }
+}

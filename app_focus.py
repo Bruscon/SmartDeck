@@ -34,12 +34,19 @@ class AppFocuser:
             },
             "window_classes": {},  # Map exe names to known window classes
             "last_focused": {},    # Remember last focused window for each app
-            "app_configs": {       # Moved from hardcoded APP_CONFIGS
+            "app_configs": {       # Configurations for special apps
                 "bcompare": {
                     "window_classes": ["TViewForm"],
                     "title_required": True,
                     "title_includes": ["Compare"],
                     "title_excludes": ["Home"],
+                },
+                "git-bash": {
+                    "window_classes": ["mintty"],
+                    "title_required": True,
+                    "title_includes": ["MINGW64"],
+                    "title_excludes": [],
+                    "process_name": "mintty.exe"  # Special case for Git Bash
                 }
             }
         }
@@ -56,6 +63,16 @@ class AppFocuser:
                     for key, value in default_config["global"].items():
                         if key not in self.config["global"]:
                             self.config["global"][key] = value
+                    
+                    # Ensure all app configs are present
+                    if "app_configs" not in self.config:
+                        self.config["app_configs"] = {}
+                    
+                    # Add git-bash config if it doesn't exist
+                    if "git-bash" not in self.config["app_configs"]:
+                        self.config["app_configs"]["git-bash"] = default_config["app_configs"]["git-bash"]
+                        self.log("Added Git Bash configuration to config file")
+                        self.save_config()
             else:
                 self.log("Creating new config file with default settings")
                 self.config = default_config
@@ -105,25 +122,8 @@ class AppFocuser:
         app_windows = []
         app_pids = set()  # Track application process IDs
         
-        # Special cases configuration - can be moved to config file if needed
-        APP_CONFIGS = {
-            "bcompare": {
-                "window_classes": ["TViewForm"],
-                "title_required": True,
-                "title_includes": ["Compare"],
-                "title_excludes": ["Home"],
-            },
-            # Add other apps that need special handling here
-            # "someapp": {
-            #     "window_classes": ["MainWindow", "DocumentWindow"],
-            #     "title_required": True,
-            #     "title_includes": ["Document"],
-            #     "title_excludes": ["Welcome"]
-            # }
-        }
-        
         # Get app-specific config if it exists
-        app_config = APP_CONFIGS.get(self.app_name.lower(), {
+        app_config = self.config["app_configs"].get(self.app_name.lower(), {
             "window_classes": [],  # Empty means accept all window classes
             "title_required": False,
             "title_includes": [],
@@ -136,7 +136,11 @@ class AppFocuser:
                 _, pid = win32process.GetWindowThreadProcessId(hwnd)
                 try:
                     process = psutil.Process(pid)
-                    if process.name().lower() == f"{self.app_name}.exe":
+                    
+                    # Check if this is a special case app (like git-bash using mintty)
+                    process_name = app_config.get("process_name", f"{self.app_name}.exe").lower()
+                    
+                    if process.name().lower() == process_name:
                         pids.add(pid)
                 except Exception:
                     pass
@@ -156,6 +160,14 @@ class AppFocuser:
                     # Debug: Log window being checked
                     self.log(f"DEBUG: Checking visible window - HWND: {hwnd}, Class: {class_name}, "
                             f"Title: {title}, PID: {pid}")
+                    
+                    # Special handling for git-bash/mintty
+                    if self.app_name.lower() == "git-bash" and class_name == "mintty":
+                        if "MINGW64" in title:
+                            self.log(f"DEBUG: Adding window - Class: {class_name}, "
+                                    f"Title: {title}, PID: {pid}")
+                            windows.append((hwnd, pid, title or f"Window ({class_name})"))
+                            return True
                     
                     # Check if window belongs to our application
                     if pid in app_pids:
@@ -280,25 +292,21 @@ class AppFocuser:
         for hwnd, pid, title in windows:
             z_order = self.get_window_z_order(hwnd)
             window_info.append((hwnd, pid, title, z_order))
-            
-        # Sort by Z-order (most recent first)
-        window_info.sort(key=lambda x: x[3])
         
-        self.log(f"Found {len(window_info)} windows, sorted by Z-order:")
+        self.log(f"Found {len(window_info)} windows:")
         for hwnd, pid, title, z_order in window_info:
             self.log(f"Window {hwnd} (Z-order: {z_order}): '{title}'")
         
         try:
             current_hwnd = win32gui.GetForegroundWindow()
             
-            # Try to focus most recently used window first
-            most_recent = window_info[0]
-            if most_recent[0] != current_hwnd:  # If not already focused
-                self.log(f"Attempting to focus most recent window: {most_recent[0]} ({most_recent[2]})")
-                if self.focus_window(most_recent[0]):
-                    return True
-                    
-            # If that fails or if it's already focused, cycle to next
+            # If no window is currently focused, start with most recent
+            if current_hwnd not in [w[0] for w in window_info]:
+                window_info.sort(key=lambda x: x[3])  # Sort by Z-order
+                self.log(f"No window focused, starting with most recent: {window_info[0][0]}")
+                return self.focus_window(window_info[0][0])
+                
+            # Otherwise cycle through all windows
             current_index = -1
             for i, (hwnd, _, _, _) in enumerate(window_info):
                 if hwnd == current_hwnd:
@@ -308,7 +316,7 @@ class AppFocuser:
             next_index = (current_index + 1) % len(window_info)
             next_window = window_info[next_index]
             
-            self.log(f"Cycling to next window: {next_window[0]} ({next_window[2]})")
+            self.log(f"Cycling from index {current_index} to {next_index}: {next_window[0]} ({next_window[2]})")
             return self.focus_window(next_window[0])
                 
         except Exception as e:
@@ -334,6 +342,11 @@ class AppFocuser:
 
     def focus_app(self) -> bool:
         """Main function to find and focus the application."""
+        if self.is_control_pressed():  # Check if Ctrl is pressed
+            self.log("Ctrl key detected - launching new instance")
+            return self.launch_app()
+        
+        # logic for cycling windows
         start_time = time.time()
         
         # Check if app is running
@@ -350,13 +363,43 @@ class AppFocuser:
     def is_process_running(self) -> bool:
         """Check if the application is already running."""
         try:
-            for proc in psutil.process_iter(['name']):
-                if proc.info['name'].lower() == f"{self.app_name}.exe":
+            app_config = self.config["app_configs"].get(self.app_name.lower(), {})
+            process_name = app_config.get("process_name", f"{self.app_name}.exe").lower()
+            
+            # Special case for git-bash
+            if self.app_name.lower() == "git-bash":
+                # Check for mintty processes with MINGW64 windows
+                for hwnd in self.get_matching_windows("mintty", "MINGW64"):
                     return True
+            
+            # Regular process check
+            for proc in psutil.process_iter(['name']):
+                if proc.info['name'].lower() == process_name:
+                    return True
+            
             return False
         except Exception as e:
             self.log(f"Error checking process: {e}")
             return False
+            
+    def get_matching_windows(self, class_name, title_substring):
+        """Find windows matching the given class name and title substring."""
+        matching_windows = []
+        
+        def enum_callback(hwnd, result_list):
+            if win32gui.IsWindowVisible(hwnd):
+                window_class = win32gui.GetClassName(hwnd)
+                window_title = win32gui.GetWindowText(hwnd)
+                
+                if window_class == class_name and title_substring in window_title:
+                    result_list.append(hwnd)
+            return True
+            
+        win32gui.EnumWindows(lambda hwnd, l: enum_callback(hwnd, matching_windows), None)
+        return matching_windows
+
+    def is_control_pressed(self):
+        return win32api.GetAsyncKeyState(win32con.VK_CONTROL) & 0x8000 != 0
 
 def main():
     if len(sys.argv) != 2:
