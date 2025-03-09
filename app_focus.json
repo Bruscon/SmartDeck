@@ -5,13 +5,15 @@
     "max_retries": 3,
     "max_log_lines": 1000,
     "tab_switch_delay": 0.1,
-    "max_tabs": 20
+    "max_tabs": 20,
+    "debug": false
   },
   "window_classes": {},
   "last_focused": {
-    "bcompare": 1704576,
+    "bcompare": 10291860,
     "git-bash": 1185758,
-    "obsidian": 2494068
+    "obsidian": 2494068,
+    "sublime_text": 45744574
   },
   "app_configs": {
     "bcompare": {

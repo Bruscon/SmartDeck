@@ -171,6 +171,5 @@ cython_debug/
 .pypirc
 
 #Project specific
-*.json
 *.log
 archive/
