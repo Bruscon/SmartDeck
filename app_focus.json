@@ -1,22 +1,18 @@
 {
   "global": {
-    "launch_timeout": 10,
-    "focus_retry_delay": 0.1,
+    "launch_timeout": 5,
+    "focus_retry_delay": 0.02,
     "max_retries": 3,
     "max_log_lines": 1000,
-    "tab_switch_delay": 0.1,
+    "tab_switch_delay": 0.02,
     "max_tabs": 20,
     "debug": false
   },
   "window_classes": {},
   "last_focused": {
-    "bcompare": 10291860,
-    "git-bash": 1185758,
-    "obsidian": 2494068,
+    "calc": 3281444,
     "sublime_text": 45744574,
-    "anaconda prompt (anaconda3)": 11080246,
-    "calc": 858096,
-    "explorer": 65936
+    "explorer": 65850
   },
   "app_configs": {
     "bcompare": {
@@ -41,6 +37,22 @@
       ],
       "title_excludes": [],
       "process_name": "mintty.exe"
+    },
+    "calc": {
+      "window_classes": [
+        "ApplicationFrameWindow"
+      ],
+      "title_required": true,
+      "title_includes": [
+        "Calculator"
+      ],
+      "title_excludes": [
+        "Chrome",
+        "MSCTFIME UI",
+        "Default IME"
+      ],
+      "process_name": "Calculator.exe",
+      "use_window_name_match": true
     }
   }
 }

@@ -122,7 +122,7 @@ class AppFocuser:
     # Insert this into app_focus.py to replace the find_app_windows method
 
     def find_app_windows(self) -> List[Tuple[int, int, str]]:
-        """Find all windows belonging to the application with optimized enumeration."""
+        """Find all windows belonging to the application with improved UWP app support."""
         app_windows = []
         all_windows = []  # Cache all windows in one enumeration
         
@@ -133,6 +133,12 @@ class AppFocuser:
             "title_includes": [],
             "title_excludes": []
         })
+        
+        # Check if this is likely a UWP app
+        is_uwp_app = False
+        if app_config.get("window_classes") and "ApplicationFrameWindow" in app_config.get("window_classes", []):
+            is_uwp_app = True
+            self.log(f"Detected UWP app: {self.app_name}")
         
         # First, identify all matching processes
         app_pids = set()
@@ -155,7 +161,7 @@ class AppFocuser:
                 
                 # Skip known system window classes that aren't application windows
                 if class_name in ["ToolTip", "SysListView32", "Button", "Static", 
-                                 "DummyDWMListenerWindow", "ApplicationFrameWindow"]:
+                                 "DummyDWMListenerWindow"]:
                     return True
                 
                 # Get basic process information for this window
@@ -189,26 +195,36 @@ class AppFocuser:
             matches_app = False
             match_reason = []
             
-            # 1. Check if window belongs to one of our known app processes
-            if pid in app_pids:
-                matches_app = True
-                match_reason.append(f"PID match ({pid})")
-            
-            # 2. Check window class (if specified)
-            if app_config.get("window_classes") and class_name in app_config.get("window_classes", []):
-                matches_app = True
-                match_reason.append(f"Class match ({class_name})")
-            
-            # 3. Check window title
-            title_includes = app_config.get("title_includes", [])
-            if title_includes and any(include in title for include in title_includes):
-                matches_app = True
-                match_reason.append("Title include match")
-            
-            # 4. If the app name is in the window title, it's likely a match
-            if self.app_name.lower() in title.lower():
-                matches_app = True
-                match_reason.append("App name in title")
+            # Special handling for UWP apps
+            if is_uwp_app and class_name == "ApplicationFrameWindow":
+                # For UWP apps, focus on title and class rather than PID
+                title_includes = app_config.get("title_includes", [])
+                if title_includes and any(include in title for include in title_includes):
+                    matches_app = True
+                    match_reason.append(f"UWP title match ({title})")
+            else:
+                # Standard window matching logic for non-UWP apps
+                
+                # 1. Check if window belongs to one of our known app processes
+                if pid in app_pids:
+                    matches_app = True
+                    match_reason.append(f"PID match ({pid})")
+                
+                # 2. Check window class (if specified)
+                if app_config.get("window_classes") and class_name in app_config.get("window_classes", []):
+                    matches_app = True
+                    match_reason.append(f"Class match ({class_name})")
+                
+                # 3. Check window title for includes
+                title_includes = app_config.get("title_includes", [])
+                if title_includes and any(include in title for include in title_includes):
+                    matches_app = True
+                    match_reason.append("Title include match")
+                
+                # 4. If the app name is in the window title, it's likely a match
+                if self.app_name.lower() in title.lower():
+                    matches_app = True
+                    match_reason.append("App name in title")
             
             # Skip if no match found
             if not matches_app:
@@ -744,15 +760,106 @@ def is_shortcut_file(file_path):
     """Check if a file is a Windows shortcut (.lnk) file."""
     return file_path.lower().endswith('.lnk')
 
+def debug_windows(app_name):
+    """Print detailed window information for all windows to help debug window detection issues."""
+    print(f"\n=== DEBUG: Finding all windows related to {app_name} ===\n")
+    
+    # Find all process IDs that might match our target
+    target_pids = set()
+    for proc in psutil.process_iter(['pid', 'name']):
+        try:
+            if app_name.lower() in proc.info['name'].lower():
+                target_pids.add(proc.info['pid'])
+                print(f"Found process: {proc.info['name']} (PID: {proc.info['pid']})")
+        except Exception as e:
+            print(f"Error checking process: {e}")
+    
+    # Store all window information
+    window_info = []
+    
+    def enum_window_callback(hwnd, results):
+        if win32gui.IsWindowVisible(hwnd):
+            try:
+                title = win32gui.GetWindowText(hwnd)
+                class_name = win32gui.GetClassName(hwnd)
+                
+                # Only include windows with actual titles
+                if title:
+                    # Get process ID of this window
+                    _, pid = win32process.GetWindowThreadProcessId(hwnd)
+                    
+                    # Check if window is Calculator-related
+                    is_target = False
+                    match_reason = []
+                    
+                    # Process ID match
+                    if pid in target_pids:
+                        is_target = True
+                        match_reason.append(f"PID match ({pid})")
+                    
+                    # Title includes app name
+                    if app_name.lower() in title.lower():
+                        is_target = True
+                        match_reason.append("Title match")
+                    
+                    # For Calculator specifically
+                    if app_name.lower() == "calc" and "calculator" in title.lower():
+                        is_target = True
+                        match_reason.append("Calculator title")
+                    
+                    results.append({
+                        'hwnd': hwnd,
+                        'title': title,
+                        'class': class_name,
+                        'pid': pid,
+                        'is_target': is_target,
+                        'reason': ", ".join(match_reason) if match_reason else "None"
+                    })
+            except Exception as e:
+                print(f"Error getting window info for {hwnd}: {e}")
+        return True
+    
+    win32gui.EnumWindows(lambda hwnd, l: enum_window_callback(hwnd, window_info), None)
+    
+    # Print out all windows, sorted by relevance
+    print(f"\nFound {len(window_info)} windows with titles (sorted by relevance):\n")
+    
+    # Sort by is_target (True first), then by whether title contains our target app
+    window_info.sort(key=lambda w: (not w['is_target'], app_name.lower() not in w['title'].lower()))
+    
+    print("{:<10} {:<10} {:<40} {:<40} {:<10}".format("HWND", "PID", "Title", "Class", "Relevant"))
+    print("-" * 100)
+    
+    for window in window_info:
+        print("{:<10} {:<10} {:<40} {:<40} {:<10}".format(
+            window['hwnd'],
+            window['pid'],
+            window['title'][:40],
+            window['class'][:40],
+            "YES" if window['is_target'] else "NO"
+        ))
+        if window['is_target']:
+            print(f"  Match reason: {window['reason']}")
+    
+    print("\n=== END DEBUG ===\n")
+    sys.exit(0)
+    
+
 def main():
     # Set script to high priority immediately
     set_process_priority()
     
     if len(sys.argv) < 2:
-        print("Usage: python app_focus.py <path_to_application> [--debug]")
+        print("Usage: python app_focus.py <path_to_application> [--debug] [--debug-windows]")
         print("Example: python app_focus.py C:\\Program Files\\Beyond Compare 4\\BCompare.exe")
         sys.exit(1)
 
+    # Check for debug window flag
+    if "--debug-windows" in sys.argv:
+        app_path = next((arg for arg in sys.argv[1:] if not arg.startswith("--")), None)
+        debug_windows(Path(app_path).stem)
+        sys.exit(0)
+        
     # Check for debug flag
     debug_mode = "--debug" in sys.argv
     
