@@ -11,6 +11,8 @@ import json
 from datetime import datetime
 import subprocess
 import os
+import pythoncom
+from win32com.shell import shell, shellcon
 
 class AppFocuser:
     CONFIG_FILE = Path(__file__).parent / "app_focus.json"
@@ -459,40 +461,122 @@ class AppFocuser:
             
             return False
 
+
     def launch_app(self) -> bool:
-        """Launch the application."""
+        """Launch the application with enhanced shortcut handling."""
         try:
-            # Set high priority for the launched process
-            startupinfo = subprocess.STARTUPINFO()
-            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
-            startupinfo.wShowWindow = win32con.SW_SHOWNORMAL
+            app_path = str(self.app_path)
             
-            # Ensure parent directories exist in case we need to set working directory
-            working_dir = self.app_path.parent
-            if not working_dir.exists():
-                self.log(f"Working directory does not exist: {working_dir}")
-                working_dir = None
+            # Handle shortcuts (.lnk files)
+            if is_shortcut_file(app_path):
+                self.log(f"Detected shortcut file: {app_path}")
+                target_path, arguments, working_dir = extract_shortcut_target(app_path)
+                
+                if not target_path:
+                    self.log("Failed to extract shortcut target")
+                    return False
+                    
+                self.log(f"Shortcut target: {target_path}")
+                self.log(f"Shortcut arguments: {arguments}")
+                self.log(f"Shortcut working directory: {working_dir}")
+                
+                # Check for complex command patterns
+                is_complex_command = False
+                
+                # Check if this is a cmd.exe with nested script execution
+                if "cmd.exe" in target_path.lower() and "/k" in arguments.lower() and '"' in arguments:
+                    is_complex_command = True
+                    self.log("Detected complex command with nested scripts")
+                
+                # Process working directory
+                if working_dir:
+                    working_dir = os.path.expandvars(working_dir)
+                    if working_dir.startswith('\\'):
+                        working_dir = os.path.join(os.environ.get('HOMEDRIVE', 'C:'), working_dir)
+                else:
+                    working_dir = os.path.expanduser("~")
+                
+                self.log(f"Using working directory: {working_dir}")
+                
+                if is_complex_command:
+                    # Create a temporary batch file to properly handle complex commands
+                    temp_dir = os.path.join(os.environ.get('TEMP', os.path.expanduser('~/AppData/Local/Temp')))
+                    os.makedirs(temp_dir, exist_ok=True)
+                    
+                    # Create a unique name based on the shortcut
+                    batch_name = os.path.splitext(os.path.basename(app_path))[0]
+                    batch_file = os.path.join(temp_dir, f"launch_{batch_name}_{int(time.time())}.bat")
+                    
+                    with open(batch_file, 'w') as f:
+                        f.write('@echo off\n')
+                        
+                        # Set initial directory
+                        f.write(f'cd /d "{working_dir}"\n')
+                        
+                        # Extract the command that comes after /K and write it directly
+                        # This handles the complex quoting by letting the batch file interpreter handle it
+                        k_index = arguments.lower().find("/k")
+                        if k_index >= 0:
+                            command_after_k = arguments[k_index + 2:].strip()
+                            f.write(f'{command_after_k}\n')
+                        else:
+                            # Fallback to the full command if we can't parse it
+                            f.write(f'"{target_path}" {arguments}\n')
+                        
+                        # Keep the window open
+                        f.write('cmd /k\n')
+                    
+                    self.log(f"Created launcher batch file: {batch_file}")
+                    
+                    # Execute the batch file with a visible console
+                    process = subprocess.Popen(
+                        batch_file,
+                        creationflags=subprocess.CREATE_NEW_CONSOLE
+                    )
+                    
+                    self.log(f"Launched complex command with PID: {process.pid}")
+                    return True
+                else:
+                    # Standard shortcut execution
+                    startupinfo = subprocess.STARTUPINFO()
+                    startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+                    startupinfo.wShowWindow = win32con.SW_SHOW
+                    
+                    # If it's a console app, make sure it's visible
+                    is_console_app = "cmd.exe" in target_path.lower() or "powershell.exe" in target_path.lower()
+                    
+                    if is_console_app:
+                        self.log("Launching console application with visible window")
+                        process = subprocess.Popen(
+                            [target_path] + ([arguments] if arguments else []),
+                            cwd=working_dir,
+                            creationflags=subprocess.CREATE_NEW_CONSOLE
+                        )
+                    else:
+                        self.log("Launching standard application")
+                        process = subprocess.Popen(
+                            [target_path] + ([arguments] if arguments else []),
+                            cwd=working_dir,
+                            startupinfo=startupinfo
+                        )
+                    
+                    self.log(f"Launched process with PID: {process.pid}")
+                    return True
+                    
+            # Standard executable handling
+            self.log(f"Launching standard executable: {app_path}")
             
-            # Create process with high priority
             process = subprocess.Popen(
                 [str(self.app_path)], 
-                cwd=working_dir if working_dir else None,
-                startupinfo=startupinfo
+                cwd=self.app_path.parent if self.app_path.parent.exists() else None
             )
-            
-            # Set the process priority
-            try:
-                handle = win32api.OpenProcess(win32con.PROCESS_ALL_ACCESS, False, process.pid)
-                win32process.SetPriorityClass(handle, win32process.ABOVE_NORMAL_PRIORITY_CLASS)
-            except Exception as e:
-                self.log(f"Warning: Could not set process priority: {e}")
             
             self.log(f"Launched application: {self.app_path}")
             return True
             
         except Exception as e:
             self.log(f"Error launching application: {e}")
-            return False
+        return False
 
     def focus_app(self) -> bool:
         """Main function to find and focus the application."""
@@ -620,6 +704,45 @@ def set_process_priority():
         return True
     except Exception:
         return False
+
+
+def extract_shortcut_target(shortcut_path):
+    """
+    Extract the target path and arguments from a Windows .lnk shortcut file.
+    
+    Args:
+        shortcut_path (str): Path to the .lnk shortcut file
+        
+    Returns:
+        tuple: (target_path, arguments, working_dir) or (None, None, None) if failed
+    """
+    try:
+        pythoncom.CoInitialize()
+        shortcut = pythoncom.CoCreateInstance(
+            shell.CLSID_ShellLink,
+            None,
+            pythoncom.CLSCTX_INPROC_SERVER,
+            shell.IID_IShellLink
+        )
+        
+        persist_file = shortcut.QueryInterface(pythoncom.IID_IPersistFile)
+        persist_file.Load(shortcut_path)
+        
+        # Get the target path and arguments
+        target_path = shortcut.GetPath(shell.SLGP_UNCPRIORITY)[0]
+        arguments = shortcut.GetArguments()
+        working_dir = shortcut.GetWorkingDirectory()
+        
+        return target_path, arguments, working_dir
+    except Exception as e:
+        print(f"Error extracting shortcut target: {e}")
+        return None, None, None
+    finally:
+        pythoncom.CoUninitialize()
+
+def is_shortcut_file(file_path):
+    """Check if a file is a Windows shortcut (.lnk) file."""
+    return file_path.lower().endswith('.lnk')
 
 def main():
     # Set script to high priority immediately
